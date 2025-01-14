@@ -15,6 +15,7 @@ app.use(express.json());
 const userRoutes = require('./routes/userRoutes');
 const authRoutes = require('./routes/authRoutes');
 const chatRoutes = require('./routes/chatRoutes');
+const {MAX_MESSAGE_LENGTH} = require("./constants");
 
 // API versioning
 app.use('/api/v1/users', userRoutes);
@@ -69,6 +70,12 @@ wss.on('connection', async (ws, req) => {
     // Логика отправки нового сообщения остается прежней
     ws.on('message', async (message) => {
         const { chat_id, content } = JSON.parse(message);
+
+        // Проверка длины сообщения
+        if (content.length > MAX_MESSAGE_LENGTH) {
+            ws.send(JSON.stringify({ error: `Message exceeds maximum length of ${MAX_MESSAGE_LENGTH} characters` }));
+            return;
+        }
 
         // Проверка, что отправитель — участник чата
         const chat = await pool.query(
