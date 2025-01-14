@@ -69,7 +69,32 @@ wss.on('connection', async (ws, req) => {
 
     // Логика отправки нового сообщения остается прежней
     ws.on('message', async (message) => {
-        const { chat_id, content } = JSON.parse(message);
+        const { type, chat_id, content } = JSON.parse(message);
+
+        if (type === 'typing_start' || type === 'typing_stop') {
+            // Определяем второго участника чата
+            const chat = await pool.query(
+                'SELECT * FROM chats WHERE id = $1 AND (user1_id = $2 OR user2_id = $2)',
+                [chat_id, user_id]
+            );
+
+            if (chat.rows.length === 0) {
+                console.log(`Пользователь ${user_id} не является участником чата ${chat_id}`);
+                return;
+            }
+
+            const otherUserId = chat.rows[0].user1_id === user_id ? chat.rows[0].user2_id : chat.rows[0].user1_id;
+
+            // Отправляем событие второму участнику
+            if (connections[otherUserId]) {
+                connections[otherUserId].send(JSON.stringify({
+                    type,
+                    chat_id,
+                    user_id,
+                }));
+            }
+            return;
+        }
 
         // Проверка длины сообщения
         if (content.length > MAX_MESSAGE_LENGTH) {
