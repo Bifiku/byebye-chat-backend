@@ -55,32 +55,6 @@ router.post('/create', async (req, res) => {
     }
 });
 
-router.post('/:chatId/messages', authMiddleware, async (req, res) => {
-    const { chatId } = req.params;
-    const { content } = req.body;
-    const sender_id = req.user_id;
-
-    if (!sender_id || !content) {
-        return res.status(400).json({ error: 'Отправитель и содержимое обязательны' });
-    }
-
-    if (!chatId) {
-        return res.status(400).json({ error: 'Чат не найден' });
-    }
-
-    try {
-        const result = await pool.query(
-            'INSERT INTO messages (chat_id, sender_id, content) VALUES ($1, $2, $3) RETURNING *',
-            [chatId, sender_id, content]
-        );
-
-        res.status(201).json(result.rows[0]);
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Ошибка при отправке сообщения' });
-    }
-});
-
 router.get('/:chatId/messages', authMiddleware, async (req, res) => {
     const { chatId } = req.params;
     const user_id = req.user_id;
