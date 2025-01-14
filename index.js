@@ -16,9 +16,10 @@ const userRoutes = require('./routes/userRoutes');
 const authRoutes = require('./routes/authRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 
-app.use('/api/users', userRoutes);
-app.use('/api/auth', authRoutes);
-app.use('/api/chats', chatRoutes);
+// API versioning
+app.use('/api/v1/users', userRoutes);
+app.use('/api/v1/auth', authRoutes);
+app.use('/api/v1/chats', chatRoutes);
 
 // Настраиваем хранение подключений
 const connections = {};
@@ -114,9 +115,17 @@ wss.on('connection', async (ws, req) => {
     });
 });
 
+// Улучшение обработки ошибок
+app.use((err, req, res, next) => {
+    console.error(err.stack);
+    if (err.code === '23505') { // Конфликт уникального ключа
+        return res.status(409).send({ error: 'Duplicate entry detected' });
+    }
+    res.status(500).send({ error: 'Internal Server Error' });
+});
 
 // Запуск сервера
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
     console.log(`Сервер запущен на порту ${PORT}`);
 });
