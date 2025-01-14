@@ -6,34 +6,47 @@ const authMiddleware = require('../middleware/authMiddleware')
 const router = express.Router();
 
 router.get('/', authMiddleware, async (req, res) => {
-    const user_id = req.user_id;
+    const userId = req.user_id;
 
     try {
-        const result = await pool.query(
-            `SELECT chats.*,
-                COUNT(messages.id) AS unread_count,
-                (SELECT content 
-                 FROM messages 
-                 WHERE chat_id = chats.id 
-                 ORDER BY created_at DESC 
-                 LIMIT 1) AS last_message
-             FROM chats
-             LEFT JOIN messages ON messages.chat_id = chats.id 
-                            AND messages.sender_id != $1 
-                            AND messages.is_read = false
-             WHERE chats.user1_id = $1 OR chats.user2_id = $1
-             GROUP BY chats.id;`,
-            [user_id]
+        const chats = await pool.query(
+            `
+            SELECT 
+                c.id AS chat_id,
+                c.user1_id,
+                c.user2_id,
+                m.id AS message_id,
+                m.content AS last_message,
+                m.sender_id,
+                m.read_at,
+                m.created_at AS last_message_time
+            FROM 
+                chats c
+            LEFT JOIN 
+                LATERAL (
+                    SELECT * 
+                    FROM messages 
+                    WHERE chat_id = c.id 
+                    ORDER BY created_at DESC 
+                    LIMIT 1
+                ) m ON true
+            WHERE 
+                c.user1_id = $1 OR c.user2_id = $1
+            ORDER BY 
+                m.created_at DESC NULLS LAST
+            LIMIT 50;
+            `,
+            [userId]
         );
 
-
-
-        res.status(200).json(result.rows);
+        res.status(200).json(chats.rows);
     } catch (error) {
         console.error('Ошибка при получении списка чатов:', error);
-        res.status(500).json({ error: 'Ошибка при получении списка чатов' });
+        res.status(500).json({ error: 'Ошибка сервера' });
     }
 });
+
+
 
 router.post('/create', async (req, res) => {
     const { user1_id, user2_id } = req.body;
@@ -57,29 +70,34 @@ router.post('/create', async (req, res) => {
 
 router.get('/:chatId/messages', authMiddleware, async (req, res) => {
     const { chatId } = req.params;
-    const user_id = req.user_id;
-
-    // Проверка, что пользователь является участником чата
-    const chat = await pool.query(
-        'SELECT * FROM chats WHERE id = $1 AND (user1_id = $2 OR user2_id = $2)',
-        [chatId, user_id]
-    );
-
-    if (chat.rows.length === 0) {
-        return res.status(403).json({ error: 'У вас нет доступа к этому чату' });
-    }
+    const userId = req.user_id;
+    const limit = parseInt(req.query.limit, 10) || 50; // Лимит сообщений (по умолчанию 50)
+    const offset = parseInt(req.query.offset, 10) || 0; // Смещение для пагинации
 
     try {
-        const result = await pool.query(
-            'SELECT * FROM messages WHERE chat_id = $1 ORDER BY created_at',
-            [chatId]
+        // Проверяем, является ли пользователь участником чата
+        const chat = await pool.query(
+            'SELECT * FROM chats WHERE id = $1 AND (user1_id = $2 OR user2_id = $2)',
+            [chatId, userId]
         );
-        res.status(200).json(result.rows);
+
+        if (chat.rows.length === 0) {
+            return res.status(403).json({ error: 'Access denied to this chat' });
+        }
+
+        // Получаем сообщения с лимитом и смещением
+        const messages = await pool.query(
+            'SELECT * FROM messages WHERE chat_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
+            [chatId, limit, offset]
+        );
+
+        res.status(200).json(messages.rows);
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Ошибка при получении сообщений' });
+        console.error('Ошибка при получении сообщений:', error);
+        res.status(500).json({ error: 'Ошибка сервера' });
     }
 });
+
 
 
 module.exports = router;
