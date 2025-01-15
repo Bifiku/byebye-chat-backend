@@ -132,6 +132,30 @@ router.post('/find_random_chat', authMiddleware, async (req, res) => {
     }
 });
 
+
+router.post('/cancel_find_partner', authMiddleware, async (req, res) => {
+    const userId = req.user_id;
+
+    try {
+        // Проверяем, есть ли пользователь в таблице waiting_users
+        const userInQueue = await pool.query(
+            'SELECT * FROM waiting_users WHERE user_id = $1',
+            [userId]
+        );
+
+        if (userInQueue.rows.length === 0) {
+            return res.status(404).json({ error: 'Пользователь не находится в очереди ожидания.' });
+        }
+
+        // Удаляем пользователя из очереди
+        await pool.query('DELETE FROM waiting_users WHERE user_id = $1', [userId]);
+        res.status(200).json({ message: 'Вы прекратили поиск собеседника.' });
+    } catch (error) {
+        console.error('Ошибка при отмене поиска:', error);
+        res.status(500).json({ error: 'Ошибка сервера при отмене поиска' });
+    }
+});
+
 router.delete('/:chatId/end', authMiddleware, async (req, res) => {
     const { chatId } = req.params;
     const userId = req.user_id;
