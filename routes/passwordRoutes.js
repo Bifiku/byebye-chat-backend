@@ -24,6 +24,7 @@ router.post('/forgot-password', async (req, res) => {
         }
 
         const user_id = user.rows[0].id;
+        const user_email = user.rows[0].email;
 
         // Генерируем уникальный код
         const resetCode = crypto.randomInt(10000, 99999).toString();
@@ -34,7 +35,22 @@ router.post('/forgot-password', async (req, res) => {
             [resetCode, user_id]
         );
 
-        // Отправляем код на email
+        // Создаём HTML-сообщение
+        const htmlMessage = `
+            <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                <h2 style="color: #3d97c6;">Byebye Chat: Сброс пароля</h2>
+                <p>Здравствуйте, <strong>${username}</strong></p>
+                <p>Вы запросили сброс пароля для своего аккаунта в Byebye Chat.</p>
+                <p>Ваш код для сброса пароля:</p>
+                <div style="font-size: 1.5em; font-weight: bold; color: #3d97c6;">${resetCode}</div>
+                <p>Этот код действителен в течение <strong>10 минут</strong>.</p>
+                <p>Если вы не запрашивали сброс пароля, проигнорируйте это сообщение.</p>
+                <p>С уважением,</p>
+                <p>Команда Byebye Chat</p>
+            </div>
+        `;
+
+        // Отправляем письмо
         const transporter = nodemailer.createTransport({
             service: 'gmail',
             auth: {
@@ -44,10 +60,10 @@ router.post('/forgot-password', async (req, res) => {
         });
 
         await transporter.sendMail({
-            from: process.env.EMAIL_USER,
-            to: user.rows[0].email,
-            subject: 'Password Reset Code',
-            text: `Your password reset code is: ${resetCode}`,
+            from: `"Byebye Chat" <${process.env.EMAIL_USER}>`,
+            to: user_email,
+            subject: 'Сброс пароля в Byebye Chat',
+            html: htmlMessage,
         });
 
         res.status(200).json({ message: 'Reset code sent to your email' });
@@ -56,6 +72,7 @@ router.post('/forgot-password', async (req, res) => {
         res.status(500).json({ error: 'Internal server error' });
     }
 });
+
 
 router.post('/verify-reset-code', async (req, res) => {
     const { username, email, resetCode } = req.body;
