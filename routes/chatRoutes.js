@@ -1,9 +1,24 @@
 const express = require('express');
+const multer = require('multer');
+const path = require('path');
 const pool = require('../db');
 const authMiddleware = require('../middleware/authMiddleware');
-const {verifyChatParticipant, createChat, getChat} = require("../models/chat");
+const { verifyChatParticipant, createChat, getChat } = require('../models/chat');
 
 const router = express.Router();
+
+// Настройка Multer для загрузки файлов
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, 'uploads/'); // Папка для сохранения файлов
+    },
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+        cb(null, uniqueSuffix + path.extname(file.originalname));
+    },
+});
+
+const upload = multer({ storage });
 
 // Эндпоинты
 router.get('/', authMiddleware, async (req, res) => {
@@ -86,3 +101,35 @@ router.get('/:chatId/messages', authMiddleware, async (req, res) => {
         res.status(500).json({ error: 'Ошибка сервера' });
     }
 });
+
+// Эндпоинт для отправки сообщения с изображением
+router.post('/:chatId/send_message', authMiddleware, upload.single('file'), async (req, res) => {
+    const { chatId } = req.params;
+    const userId = req.user_id;
+    const { content } = req.body;
+
+    try {
+        const chat = await verifyChatParticipant(chatId, userId);
+
+        if (!chat) {
+            return res.status(403).json({ error: 'Access denied to this chat' });
+        }
+
+        let fileUrl = null;
+        if (req.file) {
+            fileUrl = `/uploads/${req.file.filename}`;
+        }
+
+        const savedMessage = await pool.query(
+            'INSERT INTO messages (chat_id, sender_id, content, content_type, file_url) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+            [chatId, userId, content || '', fileUrl ? 'image' : 'text', fileUrl]
+        );
+
+        res.status(201).json(savedMessage.rows[0]);
+    } catch (error) {
+        console.error('Ошибка при отправке сообщения:', error);
+        res.status(500).json({ error: 'Ошибка сервера при отправке сообщения' });
+    }
+});
+
+module.exports = router;
