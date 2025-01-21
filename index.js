@@ -6,6 +6,8 @@ const pool = require('./db');
 const { extractUserIdFromToken } = require('./models/auth');
 const rateLimit = require('express-rate-limit');
 
+const {MAX_MESSAGE_LENGTH} = require("./constants");
+
 // Создаём ограничитель запросов для API
 const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 минут
@@ -26,12 +28,13 @@ app.use(express.json());
 const userRoutes = require('./routes/userRoutes');
 const authRoutes = require('./routes/authRoutes');
 const chatRoutes = require('./routes/chatRoutes');
-const {MAX_MESSAGE_LENGTH} = require("./constants");
+const passwordRoutes = require('./routes/passwordRoutes');
 
 // API versioning
 app.use('/api/v1/user', userRoutes);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/chats', chatRoutes);
+app.use('/api/v1/password', passwordRoutes);
 
 // Настраиваем хранение подключений
 const connections = {};
