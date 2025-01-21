@@ -3,6 +3,8 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../db');
 const { generateToken } = require('../models/auth');
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcrypt");
 
 // Регистрация анонимного пользователя
 router.post('/register_anonymous', async (req, res) => {
@@ -26,17 +28,21 @@ router.post('/register_anonymous', async (req, res) => {
         );
 
         const user_id = result.rows[0].id;
-        const token = generateToken(user_id); // Генерация JWT
 
-        res.status(201).json({ token });
+        // Генерация access и refresh токенов
+        const accessToken = jwt.sign({ user_id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+        const refreshToken = jwt.sign({ user_id }, process.env.JWT_REFRESH_SECRET, { expiresIn: '365d' });
+
+        res.status(201).json({ accessToken, refreshToken });
     } catch (error) {
         console.error('Ошибка при создании пользователя:', error);
         res.status(500).json({ error: 'Ошибка сервера' });
     }
 });
 
+
 router.post('/register', async (req, res) => {
-    const { username, email, password } = req.body;
+    const { username, email, password, icon_id } = req.body;
 
     try {
         // Проверяем уникальность имени пользователя
@@ -50,8 +56,8 @@ router.post('/register', async (req, res) => {
 
         // Сохраняем пользователя
         const user = await pool.query(
-            'INSERT INTO users (username, email, password, is_permanent) VALUES ($1, $2, $3, true) RETURNING *',
-            [username, email, hashedPassword]
+            'INSERT INTO users (username, email, password, icon_id, is_permanent) VALUES ($1, $2, $3, $4, true) RETURNING *',
+            [username, email, hashedPassword, icon_id]
         );
 
         const accessToken = jwt.sign({ user_id: user.rows[0].id }, process.env.JWT_SECRET, { expiresIn: '30d' });
@@ -63,6 +69,39 @@ router.post('/register', async (req, res) => {
         res.status(500).json({ error: 'Internal server error' });
     }
 });
+
+router.post('/login', async (req, res) => {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+        return res.status(400).json({ error: 'Username and password are required' });
+    }
+
+    try {
+        // Ищем пользователя в базе
+        const user = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+        if (!user.rows.length) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Сравниваем хэш пароля
+        const validPassword = await bcrypt.compare(password, user.rows[0].password);
+        if (!validPassword) {
+            return res.status(401).json({ error: 'Invalid password' });
+        }
+
+        // Генерируем токены
+        const accessToken = jwt.sign({ user_id: user.rows[0].id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+        const refreshToken = jwt.sign({ user_id: user.rows[0].id }, process.env.JWT_REFRESH_SECRET, { expiresIn: '365d' });
+
+        res.status(200).json({ accessToken, refreshToken });
+    } catch (error) {
+        console.error('Error during login:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+
 
 
 router.post('/refresh_token', async (req, res) => {

@@ -2,6 +2,8 @@
 const express = require('express');
 const { createUser, getUserById } = require('../models/user');
 const authMiddleware = require("../middleware/authMiddleware");
+const pool = require("../db");
+const bcrypt = require("bcrypt");
 const router = express.Router();
 
 router.post('/', async (req, res) => {

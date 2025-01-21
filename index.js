@@ -29,7 +29,7 @@ const chatRoutes = require('./routes/chatRoutes');
 const {MAX_MESSAGE_LENGTH} = require("./constants");
 
 // API versioning
-app.use('/api/v1/users', userRoutes);
+app.use('/api/v1/user', userRoutes);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/chats', chatRoutes);
 
