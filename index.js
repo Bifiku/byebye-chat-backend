@@ -4,11 +4,22 @@ const http = require('http');
 const WebSocket = require('ws');
 const pool = require('./db');
 const { extractUserIdFromToken } = require('./models/auth');
+const rateLimit = require('express-rate-limit');
+
+// Создаём ограничитель запросов для API
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 минут
+    max: 100, // Ограничение 100 запросов за 15 минут
+    message: 'Too many requests, please try again later.'
+});
+
 require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
+
+app.use('/api/', apiLimiter);
 
 app.use(express.json());
 
