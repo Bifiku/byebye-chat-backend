@@ -3,6 +3,7 @@ const http = require('http');
 const rateLimit = require('express-rate-limit');
 const setupWebSocket = require('./services/websocket');
 const userRoutes = require('./routes/userRoutes');
+const usersRoutes = require('./routes/usersRoutes');
 const authRoutes = require('./routes/authRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 
@@ -26,6 +27,7 @@ app.use(express.json());
 
 
 app.use('/api/v1/user', userRoutes);
+app.use('/api/v1/users', usersRoutes);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/chats', chatRoutes);
 
