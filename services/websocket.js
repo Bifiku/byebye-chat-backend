@@ -32,57 +32,10 @@ function setupWebSocket(server) {
         console.log(`Пользователь ${user_id} подключился.`);
 
         ws.on('message', async (message) => {
-            const { type, chat_id, content } = JSON.parse(message);
-
-            if (type === 'create_chat_message') {
-                try {
-                    // Проверяем, что пользователь участник чата
-                    const chat = await pool.query(
-                        'SELECT * FROM chats WHERE id = $1 AND (user1_id = $2 OR user2_id = $2)',
-                        [chat_id, user_id]
-                    );
-
-                    if (chat.rows.length === 0) {
-                        ws.send(JSON.stringify({ error: 'You are not a participant of this chat' }));
-                        return;
-                    }
-
-                    const otherUserId = chat.rows[0].user1_id === user_id ? chat.rows[0].user2_id : chat.rows[0].user1_id;
-
-                    // Сохраняем сообщение в базе данных
-                    const savedMessage = await pool.query(
-                        'INSERT INTO messages (chat_id, sender_id, content) VALUES ($1, $2, $3) RETURNING *',
-                        [chat_id, user_id, content]
-                    );
-
-                    // Отправляем сообщение получателю
-                    if (connections[otherUserId]) {
-                        connections[otherUserId].send(JSON.stringify({
-                            type: 'receive_message',
-                            chat_id,
-                            sender_id: user_id,
-                            content,
-                            created_at: savedMessage.rows[0].created_at,
-                        }));
-                    }
-
-                    // Подтверждаем отправителю
-                    ws.send(JSON.stringify({
-                        type: 'message_sent',
-                        chat_id,
-                        recipient_id: otherUserId,
-                        content,
-                        created_at: savedMessage.rows[0].created_at,
-                    }));
-                } catch (error) {
-                    console.error('Ошибка при отправке сообщения:', error);
-                    ws.send(JSON.stringify({ error: 'Ошибка сервера при отправке сообщения' }));
-                }
-            }
+            const { type, chat_id, content, file_url } = JSON.parse(message);
 
             if (type === 'send_message') {
                 try {
-                    // Проверяем, существует ли чат
                     const chat = await pool.query(
                         'SELECT * FROM chats WHERE id = $1 AND (user1_id = $2 OR user2_id = $2)',
                         [chat_id, user_id]
@@ -95,29 +48,35 @@ function setupWebSocket(server) {
 
                     const otherUserId = chat.rows[0].user1_id === user_id ? chat.rows[0].user2_id : chat.rows[0].user1_id;
 
+                    // Определяем тип сообщения
+                    const contentType = file_url ? 'image' : 'text';
+
                     // Сохраняем сообщение в базе данных
                     const savedMessage = await pool.query(
-                        'INSERT INTO messages (chat_id, sender_id, content) VALUES ($1, $2, $3) RETURNING *',
-                        [chat_id, user_id, content]
+                        'INSERT INTO messages (chat_id, sender_id, content, content_type, file_url) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+                        [chat_id, user_id, content || '', contentType, file_url || null]
                     );
 
-                    // Отправляем сообщение получателю, если он онлайн
+                    // Отправляем сообщение получателю
                     if (connections[otherUserId]) {
                         connections[otherUserId].send(JSON.stringify({
                             type: 'receive_message',
                             chat_id,
                             sender_id: user_id,
                             content,
+                            content_type: contentType,
+                            file_url,
                             created_at: savedMessage.rows[0].created_at,
                         }));
                     }
 
-                    // Подтверждаем отправителю, что сообщение доставлено
+                    // Подтверждаем отправителю
                     ws.send(JSON.stringify({
                         type: 'message_sent',
                         chat_id,
-                        recipient_id: otherUserId,
                         content,
+                        content_type: contentType,
+                        file_url,
                         created_at: savedMessage.rows[0].created_at,
                     }));
                 } catch (error) {
@@ -128,7 +87,6 @@ function setupWebSocket(server) {
             }
 
             if (type === 'typing_start' || type === 'typing_stop') {
-                // Логика для уведомления о наборе текста
                 const chat = await pool.query(
                     'SELECT * FROM chats WHERE id = $1 AND (user1_id = $2 OR user2_id = $2)',
                     [chat_id, user_id]
