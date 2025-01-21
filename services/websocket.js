@@ -2,6 +2,8 @@ const WebSocket = require('ws');
 const pool = require('../db');
 const { extractUserIdFromToken } = require('../models/auth');
 const { MAX_MESSAGE_LENGTH } = require('../constants');
+const fs = require("fs");
+const path = require("path");
 
 // Настраиваем хранение подключений
 const connections = {};
@@ -32,7 +34,7 @@ function setupWebSocket(server) {
         console.log(`Пользователь ${user_id} подключился.`);
 
         ws.on('message', async (message) => {
-            const { type, chat_id, content, file_url } = JSON.parse(message);
+            const { type, chat_id, content, file  } = JSON.parse(message);
 
             if (type === 'send_message') {
                 try {
@@ -48,13 +50,23 @@ function setupWebSocket(server) {
 
                     const otherUserId = chat.rows[0].user1_id === user_id ? chat.rows[0].user2_id : chat.rows[0].user1_id;
 
-                    // Определяем тип сообщения
-                    const contentType = file_url ? 'image' : 'text';
+                    let fileUrl = null;
+                    if (file) {
+                        const buffer = Buffer.from(file.data, 'base64');
+                        const fileName = `${Date.now()}-${file.name}`;
+                        const filePath = path.join(__dirname, '../uploads', fileName);
+
+                        // Сохраняем файл
+                        fs.writeFileSync(filePath, buffer);
+                        fileUrl = `/uploads/${fileName}`;
+                    }
+
+                    const contentType = fileUrl ? 'image' : 'text';
 
                     // Сохраняем сообщение в базе данных
                     const savedMessage = await pool.query(
                         'INSERT INTO messages (chat_id, sender_id, content, content_type, file_url) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-                        [chat_id, user_id, content || '', contentType, file_url || null]
+                        [chat_id, user_id, content || '', contentType, fileUrl]
                     );
 
                     // Отправляем сообщение получателю
@@ -65,7 +77,7 @@ function setupWebSocket(server) {
                             sender_id: user_id,
                             content,
                             content_type: contentType,
-                            file_url,
+                            file_url: fileUrl,
                             created_at: savedMessage.rows[0].created_at,
                         }));
                     }
@@ -76,14 +88,13 @@ function setupWebSocket(server) {
                         chat_id,
                         content,
                         content_type: contentType,
-                        file_url,
+                        file_url: fileUrl,
                         created_at: savedMessage.rows[0].created_at,
                     }));
                 } catch (error) {
                     console.error('Ошибка при отправке сообщения:', error);
                     ws.send(JSON.stringify({ error: 'Ошибка сервера при отправке сообщения' }));
                 }
-                return;
             }
 
             if (type === 'typing_start' || type === 'typing_stop') {
