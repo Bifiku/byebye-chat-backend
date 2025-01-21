@@ -6,6 +6,7 @@ const userRoutes = require('./routes/userRoutes');
 const usersRoutes = require('./routes/usersRoutes');
 const authRoutes = require('./routes/authRoutes');
 const chatRoutes = require('./routes/chatRoutes');
+const passwordRoutes = require('./routes/passwordRoutes');
 
 require('dotenv').config();
 
@@ -30,6 +31,7 @@ app.use('/api/v1/user', userRoutes);
 app.use('/api/v1/users', usersRoutes);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/chats', chatRoutes);
+app.use('/api/v1/password', passwordRoutes);
 
 // Настройка WebSocket
 setupWebSocket(server);
