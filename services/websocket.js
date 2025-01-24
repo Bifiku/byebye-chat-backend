@@ -134,6 +134,7 @@ function setupWebSocket(server) {
                         [chat_id, user_id, content || '', contentType, fileUrl]
                     );
 
+                    const messageId = savedMessage.rows[0].id; // Извлекаем ID сообщения
                     let readAt = null;
 
                     // Если получатель в сети, обновляем read_at
@@ -142,11 +143,12 @@ function setupWebSocket(server) {
 
                         await pool.query(
                             'UPDATE messages SET read_at = $1 WHERE id = $2',
-                            [readAt, savedMessage.rows[0].id]
+                            [readAt, messageId]
                         );
 
                         connections[otherUserId].send(JSON.stringify({
                             type: 'receive_message',
+                            message_id: messageId,
                             chat_id,
                             sender_id: user_id,
                             content,
@@ -160,6 +162,7 @@ function setupWebSocket(server) {
                     // Подтверждаем отправителю
                     ws.send(JSON.stringify({
                         type: 'message_sent',
+                        message_id: messageId,
                         chat_id,
                         content,
                         content_type: contentType,
@@ -173,6 +176,64 @@ function setupWebSocket(server) {
                 }
             }
 
+
+            if (type === 'edit_message') {
+                try {
+                    const { message_id, content } = JSON.parse(message);
+
+                    // Извлекаем информацию о сообщении и чате
+                    const messageData = await pool.query(
+                        'SELECT m.chat_id, m.sender_id, c.user1_id, c.user2_id FROM messages m JOIN chats c ON m.chat_id = c.id WHERE m.id = $1',
+                        [message_id]
+                    );
+
+                    if (messageData.rows.length === 0) {
+                        ws.send(JSON.stringify({ error: 'Message not found or access denied' }));
+                        return;
+                    }
+
+                    const messageInfo = messageData.rows[0];
+
+                    // Проверяем, что пользователь является отправителем сообщения
+                    if (messageInfo.sender_id !== user_id) {
+                        ws.send(JSON.stringify({ error: 'You can only edit your own messages' }));
+                        return;
+                    }
+
+                    // Обновляем сообщение
+                    const result = await pool.query(
+                        'UPDATE messages SET content = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
+                        [content, message_id]
+                    );
+
+                    const updatedMessage = result.rows[0];
+
+                    // Уведомляем второго участника чата
+                    const otherUserId = messageInfo.user1_id === user_id ? messageInfo.user2_id : messageInfo.user1_id;
+
+                    if (connections[otherUserId]) {
+                        connections[otherUserId].send(JSON.stringify({
+                            type: 'message_edited',
+                            message_id: updatedMessage.id,
+                            chat_id: updatedMessage.chat_id,
+                            content: updatedMessage.content,
+                            updated_at: updatedMessage.updated_at,
+                        }));
+                    }
+
+                    // Подтверждение отправителю
+                    ws.send(JSON.stringify({
+                        type: 'message_edit_success',
+                        message_id: updatedMessage.id,
+                        chat_id: updatedMessage.chat_id,
+                        content: updatedMessage.content,
+                        updated_at: updatedMessage.updated_at,
+                    }));
+                } catch (error) {
+                    console.error('Ошибка при редактировании сообщения:', error);
+                    ws.send(JSON.stringify({ error: 'Ошибка сервера при редактировании сообщения' }));
+                }
+            }
 
             if (type === 'read_message') {
                 try {

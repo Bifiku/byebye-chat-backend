@@ -132,4 +132,75 @@ router.post('/:chatId/send_message', authMiddleware, upload.single('file'), asyn
     }
 });
 
+router.delete('/:chatId/messages/:messageId', authMiddleware, async (req, res) => {
+    const { chatId, messageId } = req.params;
+    const userId = req.user_id;
+
+    try {
+        // Проверяем, что пользователь является участником чата
+        const chat = await pool.query(
+            'SELECT * FROM chats WHERE id = $1 AND (user1_id = $2 OR user2_id = $2)',
+            [chatId, userId]
+        );
+
+        if (chat.rows.length === 0) {
+            return res.status(403).json({ error: 'Access denied to this chat' });
+        }
+
+        // Удаляем сообщение, если оно принадлежит пользователю
+        const result = await pool.query(
+            'DELETE FROM messages WHERE id = $1 AND sender_id = $2 RETURNING *',
+            [messageId, userId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Message not found or access denied' });
+        }
+
+        res.status(200).json({ message: 'Message deleted successfully' });
+    } catch (error) {
+        console.error('Ошибка при удалении сообщения:', error);
+        res.status(500).json({ error: 'Ошибка сервера' });
+    }
+});
+
+router.patch('/:chatId/messages/:messageId', authMiddleware, async (req, res) => {
+    const { chatId, messageId } = req.params;
+    const { content } = req.body;
+    const userId = req.user_id;
+
+    if (!content) {
+        return res.status(400).json({ error: 'Content is required' });
+    }
+
+    try {
+        // Проверяем, что пользователь является участником чата
+        const chat = await pool.query(
+            'SELECT * FROM chats WHERE id = $1 AND (user1_id = $2 OR user2_id = $2)',
+            [chatId, userId]
+        );
+
+
+        if (chat.rows.length === 0) {
+            return res.status(403).json({ error: 'Access denied to this chat' });
+        }
+
+        // Обновляем сообщение
+        const result = await pool.query(
+            'UPDATE messages SET content = $1, updated_at = NOW() WHERE id = $2 AND sender_id = $3 RETURNING *',
+            [content, messageId, userId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Message not found or access denied' });
+        }
+
+        res.status(200).json(result.rows[0]);
+    } catch (error) {
+        console.error('Ошибка при изменении сообщения:', error);
+        res.status(500).json({ error: 'Ошибка сервера' });
+    }
+});
+
+
 module.exports = router;
