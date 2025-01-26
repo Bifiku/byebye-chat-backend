@@ -76,5 +76,26 @@ router.delete('/delete_account', authMiddleware, async (req, res) => {
     }
 });
 
+// Сохранение токена устройства
+router.post('/save-token', authMiddleware, async (req, res) => {
+    const { token } = req.body;
+    const userId = req.user_id;
+
+    if (!token) {
+        return res.status(400).json({ error: 'Token is required' });
+    }
+
+    try {
+        await pool.query(
+            'INSERT INTO device_tokens (user_id, token) VALUES ($1, $2) ON CONFLICT (token) DO NOTHING',
+            [userId, token]
+        );
+
+        res.status(200).json({ message: 'Token saved successfully' });
+    } catch (error) {
+        console.error('Ошибка при сохранении токена устройства:', error);
+        res.status(500).json({ error: 'Ошибка сервера' });
+    }
+});
 
 module.exports = router;
