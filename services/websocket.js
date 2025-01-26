@@ -4,6 +4,7 @@ const { extractUserIdFromToken } = require('../models/auth');
 const { MAX_MESSAGE_LENGTH } = require('../constants');
 const fs = require("fs");
 const path = require("path");
+const {sendNotification} = require("./notificationService");
 
 // Настраиваем хранение подключений
 const connections = {};
@@ -170,6 +171,15 @@ function setupWebSocket(server) {
                         created_at: savedMessage.rows[0].created_at,
                         read_at: readAt,
                     }));
+
+                    // Если пользователь не в сети, отправляем push-уведомление
+                    if (!connections[otherUserId]) {
+                        await sendNotification(
+                            otherUserId,
+                            'Новое сообщение!',
+                            `${user_id} отправил вам сообщение.`
+                        );
+                    }
                 } catch (error) {
                     console.error('Ошибка при отправке сообщения:', error);
                     ws.send(JSON.stringify({ error: 'Ошибка сервера при отправке сообщения' }));
