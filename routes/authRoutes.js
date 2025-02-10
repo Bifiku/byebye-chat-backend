@@ -42,7 +42,7 @@ router.post('/register_anonymous', async (req, res) => {
 
 
 router.post('/register', async (req, res) => {
-    const { username, email, password, icon_id } = req.body;
+    const { username, email, password, icon_id, referral_code } = req.body;
 
     try {
         // Проверяем уникальность имени пользователя
@@ -51,13 +51,26 @@ router.post('/register', async (req, res) => {
             return res.status(400).json({ error: 'Username already taken' });
         }
 
+        let invitedBy = null;
+
+        if (referral_code && referral_code.trim() !== "") {
+            const ref = await pool.query(
+                'UPDATE referral_codes SET uses = uses + 1 WHERE code = $1 AND (max_uses IS NULL OR uses < max_uses) RETURNING user_id',
+                [referral_code]
+            );
+            if (ref.rows.length === 0) {
+                return res.status(400).json({ error: 'Недействительный или исчерпанный код' });
+            }
+            invitedBy = ref.rows[0].user_id;
+        }
+
         // Хешируем пароль
         const hashedPassword = await bcrypt.hash(password, 10);
 
         // Сохраняем пользователя
         const user = await pool.query(
-            'INSERT INTO users (username, email, password, icon_id, is_permanent) VALUES ($1, $2, $3, $4, true) RETURNING *',
-            [username, email, hashedPassword, icon_id]
+            'INSERT INTO users (username, email, password, icon_id, invited_by) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+            [username, email, hashedPassword, icon_id, invitedBy]
         );
 
         const accessToken = jwt.sign({ user_id: user.rows[0].id }, process.env.JWT_SECRET, { expiresIn: '30d' });
@@ -69,6 +82,7 @@ router.post('/register', async (req, res) => {
         res.status(500).json({ error: 'Internal server error' });
     }
 });
+
 
 router.post('/login', async (req, res) => {
     const { username, password } = req.body;

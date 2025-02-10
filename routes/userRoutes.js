@@ -98,4 +98,21 @@ router.post('/save-token', authMiddleware, async (req, res) => {
     }
 });
 
+router.get('/stats', authMiddleware, async (req, res) => {
+    const userId = req.user_id;
+
+    try {
+        const stats = await pool.query(
+            'SELECT id, username FROM users WHERE invited_by = $1',
+            [userId]
+        );
+
+        res.status(200).json({ invited_count: stats.rows.length, users: stats.rows });
+    } catch (error) {
+        console.error('Ошибка при получении статистики:', error);
+        res.status(500).json({ error: 'Ошибка сервера' });
+    }
+});
+
+
 module.exports = router;

@@ -7,6 +7,8 @@ const usersRoutes = require('./routes/usersRoutes');
 const authRoutes = require('./routes/authRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 const passwordRoutes = require('./routes/passwordRoutes');
+const promoRoutes = require('./routes/promoRoutes');
+const referralRoutes = require('./routes/referralRoutes');
 const path = require("path");
 
 require('dotenv').config();
@@ -33,6 +35,8 @@ app.use('/api/v1/users', usersRoutes);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/chats', chatRoutes);
 app.use('/api/v1/password', passwordRoutes);
+app.use('/api/v1/promocode', promoRoutes);
+app.use('/api/v1/referral', referralRoutes);
 
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
