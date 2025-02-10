@@ -114,5 +114,25 @@ router.get('/stats', authMiddleware, async (req, res) => {
     }
 });
 
+router.get('/list', authMiddleware, async (req, res) => {
+    const userId = req.user_id;
+
+    try {
+        // Проверяем, является ли пользователь админом
+        const adminCheck = await pool.query('SELECT is_admin FROM users WHERE id = $1', [userId]);
+
+        if (adminCheck.rows.length === 0 || !adminCheck.rows[0].is_admin) {
+            return res.status(403).json({ error: 'Недостаточно прав' });
+        }
+
+        // Получаем все промокоды
+        const promocodes = await pool.query('SELECT * FROM promocodes ORDER BY created_at DESC');
+
+        res.status(200).json(promocodes.rows);
+    } catch (error) {
+        console.error('Ошибка при получении списка промокодов:', error);
+        res.status(500).json({ error: 'Ошибка сервера' });
+    }
+});
 
 module.exports = router;
