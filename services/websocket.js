@@ -14,14 +14,14 @@ function setupWebSocket(server) {
     const wss = new WebSocket.Server({ server });
 
     wss.on('connection', async (ws, req) => {
-        const authHeader = req.headers.authorization;
+        const urlParams = new URLSearchParams(req.url.split('?')[1]);
+        const token = urlParams.get('token');
 
-        if (!authHeader || !authHeader.startsWith('Bearer ')) {
-            ws.close(4001, 'Authorization token is missing or invalid');
+        if (!token) {
+            ws.close(4001, 'Authorization token is missing');
             return;
         }
 
-        const token = authHeader.split(' ')[1];
         const user_id = extractUserIdFromToken(token);
 
         if (!user_id) {
