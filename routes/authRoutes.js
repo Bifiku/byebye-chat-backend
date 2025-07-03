@@ -1,13 +1,18 @@
 // authRoutes.js
 const express = require('express');
+const { body } = require('express-validator');
 const router = express.Router();
 const pool = require('../db');
 const { generateToken } = require('../models/auth');
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
+const validations = require("../helpers/validate");
 
 // Регистрация анонимного пользователя
-router.post('/register_anonymous', async (req, res) => {
+router.post('/register_anonymous', validations([
+    body('username').isLength({ min: 3, max: 30 }).trim(),
+    body('icon_id').isInt({ min: 1 }),
+]), async (req, res) => {
     const { username, icon_id } = req.body;
 
     if (!username || !icon_id) {
@@ -41,7 +46,13 @@ router.post('/register_anonymous', async (req, res) => {
 });
 
 
-router.post('/register', async (req, res) => {
+router.post('/register', validations([
+    body('username').isLength({ min: 3, max: 30 }).trim(),
+    body('email').isEmail(),
+    body('password').isLength({ min: 6 }),
+    body('icon_id').isInt({ min: 1 }),
+    body('referral_code').optional().isString().trim(),
+]), async (req, res) => {
     const { username, email, password, icon_id, referral_code } = req.body;
 
     try {
@@ -84,7 +95,10 @@ router.post('/register', async (req, res) => {
 });
 
 
-router.post('/login', async (req, res) => {
+router.post('/login', validations([
+    body('username').notEmpty(),
+    body('password').notEmpty(),
+]), async (req, res) => {
     const { username, password } = req.body;
 
     if (!username || !password) {
@@ -118,7 +132,7 @@ router.post('/login', async (req, res) => {
 
 
 
-router.post('/refresh_token', async (req, res) => {
+router.post('/refresh_token', validations([body('refreshToken').notEmpty()]), async (req, res) => {
     const { refreshToken } = req.body;
 
     if (!refreshToken) {

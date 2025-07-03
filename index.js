@@ -13,8 +13,14 @@ const path = require("path");
 
 require('dotenv').config();
 
+const helmet = require('helmet');
+const cors = require('cors');
+
 const app = express();
 const server = http.createServer(app);
+
+app.use(helmet());
+app.use(cors({ origin: '*', methods: 'GET,POST,PUT,DELETE' }));
 
 // Лимиты запросов
 const apiLimiter = rateLimit({
@@ -39,6 +45,11 @@ app.use('/api/v1/promocode', promoRoutes);
 app.use('/api/v1/referral', referralRoutes);
 
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+app.get('/api/ping', (_req, res) => {
+    res.json({ ok: true });
+});
+
 
 // Настройка WebSocket
 setupWebSocket(server);
