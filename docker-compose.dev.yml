@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: .
+      target: dev
+    container_name: chat-app-backend-api-dev
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./src:/app/src            # исходники для hot-reload
+      - ./uploads:/app/uploads    # если есть загрузки
+      - ./.env:/app/.env          # если используется .env
+      # Можно добавить volume для package.json/tsconfig, если хочешь редактировать из контейнера
+    environment:
+      - NODE_ENV=development
+    command: npm run dev          # запуск через nodemon и ts-node
+
+  db:
+    image: postgres:16
+    container_name: chat-app-backend-db
+    environment:
+      - POSTGRES_DB=chat
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: chat-app-backend-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  pg_data:
+  redis_data:
