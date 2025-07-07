@@ -3,5 +3,5 @@
   "ignore": ["node_modules",
     "uploads"],
   "ext": "js,json",
-  "exec": "node index.js"
+  "exec": "node index.ts"
 }

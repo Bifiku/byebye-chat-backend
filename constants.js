@@ -1,3 +1,3 @@
-const MAX_MESSAGE_LENGTH = 5000; // Ограничение длины сообщения
+const MAX_MESSAGE_LENGTH = 5000;
 
-module.exports = MAX_MESSAGE_LENGTH
+module.exports = MAX_MESSAGE_LENGTH;
