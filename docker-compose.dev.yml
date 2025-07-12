@@ -4,24 +4,24 @@ services:
   api:
     build:
       context: .
+      dockerfile: Dockerfile
       target: dev
     container_name: chat-app-backend-api-dev
+    working_dir: /app
     ports:
       - "5000:5000"
     volumes:
-      - ./src:/app/src            # исходники для hot-reload
-      - ./uploads:/app/uploads    # если есть загрузки
-      - ./.env:/app/.env          # если используется .env
-      # Можно добавить volume для package.json/tsconfig, если хочешь редактировать из контейнера
+      - ./:/app
     environment:
       - NODE_ENV=development
+      - JWT_SECRET=e20d6ee83222c067dbcd124f36e2a35a84e61282d55aeaf2fb0e196c4ccacb6cf89bd9da93e734577052d9ee7d7950894d22b8ac4b81b85b49da80326684d49e
     command: npm run dev          # запуск через nodemon и ts-node
 
   db:
     image: postgres:16
     container_name: chat-app-backend-db
     environment:
-      - POSTGRES_DB=chat
+      - POSTGRES_DB=byebye
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
     ports:
