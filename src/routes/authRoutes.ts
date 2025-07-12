@@ -1,9 +1,10 @@
 import { Router } from 'express';
-import { body } from 'express-validator';
+import { body, validationResult } from 'express-validator';
 
 import { catchAsync } from '../helpers/catchAsync';
 import validate from '../helpers/validate';
 import * as authSvc from '../services/authService';
+import { getInvitedById } from '../services/referralService';
 
 const router = Router();
 
@@ -21,15 +22,47 @@ router.post(
 router.post(
   '/register',
   validate([
-    body('username').isLength({ min: 3 }),
-    body('email').isEmail(),
-    body('password').isLength({ min: 6 }),
-    body('icon_id').isInt({ min: 1 }),
+    body('username')
+      .exists()
+      .withMessage('username обязателен')
+      .bail()
+      .isLength({ min: 3 })
+      .withMessage('username слишком короткий'),
+    body('email')
+      .exists()
+      .withMessage('email обязателен')
+      .bail()
+      .isEmail()
+      .withMessage('Некорректный email'),
+    body('password').exists().withMessage('password обязателен').bail().isLength({ min: 6 }),
+    body('icon_id')
+      .exists()
+      .withMessage('icon_id обязателен')
+      .bail()
+      .toInt()
+      .custom((value) => {
+        if (Number.isNaN(value)) throw new Error('icon_id должен быть числом');
+        if (!Number.isInteger(value) || value < 1)
+          throw new Error('icon_id должен быть целым положительным числом');
+        return true;
+      }),
     body('referral_code').optional().isString(),
   ]),
+  (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      res.status(400).json({ errors: errors.array() });
+      return;
+    }
+    next();
+  },
   catchAsync(async (req, res) => {
     const { username, email, password, icon_id, referral_code } = req.body;
-    const invitedBy = referral_code ? Number(await /* найти id по коду */ null) : null;
+    const invitedBy = referral_code ? await getInvitedById(referral_code) : null;
+
+    if (referral_code && !invitedBy) {
+      return res.status(400).json({ errors: [{ msg: 'Invalid referral code' }] });
+    }
     res.status(201).json(await authSvc.register(username, email, password, icon_id, invitedBy));
   }),
 );

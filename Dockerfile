@@ -7,6 +7,7 @@ WORKDIR /app
 
 COPY package*.json ./
 COPY tsconfig*.json ./
+COPY docs ./docs
 RUN npm install
 
 # Не копируем src — будет volume-монтаж из compose
@@ -21,6 +22,7 @@ WORKDIR /app
 
 COPY package*.json ./
 COPY tsconfig*.json ./
+COPY docs ./docs
 RUN npm ci --omit=dev
 
 # теперь копируем весь код (src, dist, env и т.д.)
