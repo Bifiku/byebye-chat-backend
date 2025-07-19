@@ -1,8 +1,11 @@
+import bcrypt from 'bcrypt';
 import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 
 import { catchAsync } from '../helpers/catchAsync';
+import { issueTokens } from '../helpers/issueTokens';
 import validate from '../helpers/validate';
+import * as userRepo from '../repos/userRepo';
 import * as authSvc from '../services/authService';
 import { getInvitedById } from '../services/referralService';
 
@@ -70,10 +73,28 @@ router.post(
 /* --- ЛОГИН --- */
 router.post(
   '/login',
-  validate([body('username').notEmpty(), body('password').notEmpty()]),
+  validate([
+    body('username')
+      .exists()
+      .withMessage('username обязателен')
+      .bail()
+      .isLength({ min: 3 })
+      .withMessage('username слишком короткий'),
+    body('password').exists().withMessage('password обязателен').bail().isLength({ min: 6 }),
+  ]),
   catchAsync(async (req, res) => {
     const { username, password } = req.body;
-    res.json(await authSvc.login(username, password));
+    const user = await userRepo.findByUsername(username);
+    if (!user)
+      return res.status(401).json({
+        errors: [{ msg: 'Неверные имя пользователя или пароль' }],
+      });
+    if (!(await bcrypt.compare(password, user.password))) {
+      return res.status(401).json({
+        errors: [{ msg: 'Неверные имя пользователя или пароль' }],
+      });
+    }
+    res.json(await issueTokens(user.id));
   }),
 );
 
