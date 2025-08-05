@@ -9,11 +9,13 @@ import 'dotenv/config';
 
 import authRoutes from './routes/authRoutes';
 import chatRoutes from './routes/chatRoutes';
+import friendRoutes from './routes/friendRoutes';
 import passwordRoutes from './routes/passwordRoutes';
-import promoRoutes from './routes/promoRoutes';
-import referralRoutes from './routes/referralRoutes';
+// import promoRoutes from './routes/promoRoutes';
+// import referralRoutes from './routes/referralRoutes';
 import userRoutes from './routes/userRoutes';
-import setupWebSocket from './services/websocket';
+// import setupWebSocket from './services/websocket';
+import { setupWebSocket } from './services/websocket';
 import { setupSwagger } from './swagger';
 
 // 1) Инициализируем Express и HTTP-сервер
@@ -47,8 +49,9 @@ app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/password', passwordRoutes);
 app.use('/api/v1/user', userRoutes);
 app.use('/api/v1/chats', chatRoutes);
-app.use('/api/v1/promo', promoRoutes);
-app.use('/api/v1/referral', referralRoutes);
+// app.use('/api/v1/promo', promoRoutes);
+// app.use('/api/v1/referral', referralRoutes);
+app.use('/api/v1/friends', friendRoutes);
 
 // 6) WebSocket (handshake по /api/v1/ws)
 setupWebSocket(server);

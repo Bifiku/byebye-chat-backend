@@ -1,166 +1,215 @@
+// src/services/websocket.ts
 import http from 'http';
-import { parse } from 'url';
 
-import jwt, { JwtPayload } from 'jsonwebtoken';
-import { WebSocketServer, WebSocket } from 'ws';
-import { z } from 'zod';
+import jwt from 'jsonwebtoken';
+import WebSocket, { Server } from 'ws';
 
-import * as chatSvc from '../services/chatService';
+import { createOrGetChat, endChat, getChatUsers, saveChat } from './chatService';
+import { sendMessage } from './messageService';
+import { enqueue, findPartner, cancel as cancelSearch } from './searchService';
 
-/** Максимальная длина текстового сообщения */
-const MAX_MESSAGE_LENGTH = 2000;
+const JWT_SECRET = process.env.JWT_SECRET!;
+const clients = new Map<number, WebSocket>();
 
-/** Хранилище всех живых соединений: userId → Set<WebSocket> */
-const connections = new Map<number, Set<WebSocket>>();
+export function setupWebSocket(server: http.Server) {
+  const wss = new Server({ noServer: true });
 
-/*** Валидация входящих пакетов (zod)*/
-const baseSchema = z.object({ type: z.string() });
-const sendMsgSchema = baseSchema.extend({
-  type: z.literal('send_message'),
-  chatId: z.number().int().positive(),
-  content: z.string().max(MAX_MESSAGE_LENGTH),
-  fileUrl: z.string().url().optional(),
-});
-const editMsgSchema = baseSchema.extend({
-  type: z.literal('edit_message'),
-  chatId: z.number().int().positive(),
-  messageId: z.number().int().positive(),
-  content: z.string().max(MAX_MESSAGE_LENGTH),
-});
-const readMsgSchema = baseSchema.extend({
-  type: z.literal('read_message'),
-  chatId: z.number().int().positive(),
-  messageIds: z.array(z.number().int().positive()).min(1),
-});
-const typingSchema = baseSchema.extend({
-  type: z.union([z.literal('typing_start'), z.literal('typing_stop')]),
-  chatId: z.number().int().positive(),
-});
-
-/**
- * WebSocket setup function; вызывается из index.ts сразу после создания HTTP‑сервера
- */
-export default function setupWebSocket(server: http.Server) {
-  const wss = new WebSocketServer({ noServer: true });
-
-  /*** Upgrade → проверяем JWT в заголовке Sec-WebSocket-Protocol*/
-  server.on('upgrade', (req, socket, head) => {
-    const { pathname } = parse(req.url || '/');
-    if (pathname !== '/ws') return socket.destroy();
-
-    const token = (req.headers['sec-websocket-protocol'] as string) || '';
-    let userId: number;
-    try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET!) as JwtPayload & {
-        userId: number;
-      };
-      userId = decoded.userId;
-    } catch {
+  // При апгрейде HTTP→WS проверяем URL и прокидываем в wss
+  server.on('upgrade', (request, socket, head) => {
+    if (!request.url?.startsWith('/api/v1/ws')) {
       return socket.destroy();
     }
-
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit('connection', ws, userId);
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
     });
   });
 
-  /**
-   * On connection
-   */
-  wss.on('connection', (ws: WebSocket & { userId?: number }, userId: number) => {
-    ws.userId = userId;
+  wss.on('connection', (ws, request) => {
+    // 1) Из token в query достаём userId
+    const params = new URLSearchParams(request.url!.split('?')[1]);
+    const token = params.get('token');
+    if (!token) return ws.close();
 
-    // Добавляем соединение в map
-    const set = connections.get(userId) ?? new Set();
-    set.add(ws);
-    connections.set(userId, set);
+    let payload: { userId: number };
+    try {
+      payload = jwt.verify(token, JWT_SECRET) as { userId: number };
+    } catch {
+      return ws.close();
+    }
+    const userId = payload.userId;
+    clients.set(userId, ws);
 
-    ws.on('message', (raw) => handleMessage(ws, raw.toString()));
-    ws.on('close', () => {
-      const s = connections.get(userId);
-      if (s) {
-        s.delete(ws);
-        if (s.size === 0) connections.delete(userId);
+    // 2) Обрабатываем сообщения от клиента
+    ws.on('message', async (raw) => {
+      let msg: any;
+      try {
+        msg = JSON.parse(raw.toString());
+      } catch (err) {
+        console.error('WS parse error:', err);
+        return ws.send(JSON.stringify({ type: 'error', message: 'Invalid JSON' }));
+      }
+
+      const { type, chatId, content, filters, action } = msg;
+
+      try {
+        switch (msg.type) {
+          case 'find': {
+            await enqueue(userId, msg.filters);
+            const partner = await findPartner(userId);
+            if (partner) {
+              await cancelSearch(userId);
+              await cancelSearch(partner.user_id);
+              const chat = await createOrGetChat(userId, partner.user_id);
+              const [u1, u2] = await getChatUsers(chat.id);
+              for (const uid of [u1, u2]) {
+                const sock = clients.get(uid);
+                if (sock?.readyState === WebSocket.OPEN) {
+                  sock.send(JSON.stringify({ type: 'match', chat }));
+                }
+              }
+            }
+            break;
+          }
+
+          case 'cancel': {
+            await cancelSearch(userId);
+            ws.send(JSON.stringify({ type: 'search_cancelled' }));
+            break;
+          }
+
+          case 'message': {
+            // берём участников чата и проверяем, что чат существует
+            let users: [number, number];
+            try {
+              users = await getChatUsers(chatId);
+            } catch {
+              // чат не найден
+              return ws.send(JSON.stringify({ type: 'error', message: 'Chat not found' }));
+            }
+            // сохраняем сообщение
+            const message = await sendMessage(chatId, userId, content);
+            // рассылаем всем участникам
+            for (const uid of users) {
+              const sock = clients.get(uid);
+              if (sock?.readyState === WebSocket.OPEN) {
+                sock.send(JSON.stringify({ type: 'message', message }));
+              }
+            }
+            break;
+          }
+
+          case 'save_and_end': {
+            // 1) получаем участников, прежде чем удалить чат
+            const users = await getChatUsers(chatId);
+
+            // 2) уведомляем их, что чат сохранён и закрыт
+            users.forEach((uid) => {
+              const sock = clients.get(uid);
+              if (sock?.readyState === WebSocket.OPEN) {
+                sock.send(
+                  JSON.stringify({
+                    type: 'chat_saved_and_closed',
+                    chatId,
+                  }),
+                );
+              }
+            });
+
+            // 3) помечаем чат как «сохранённый»
+            await saveChat(chatId);
+
+            // 4) удаляем чат и связанные сообщения
+            // await endChat(chatId);
+            break;
+          }
+
+          case 'end': {
+            // 1) получаем участников
+            const users = await getChatUsers(chatId);
+
+            // 2) уведомляем их, что чат закрыт без сохранения
+            users.forEach((uid) => {
+              const sock = clients.get(uid);
+              if (sock?.readyState === WebSocket.OPEN) {
+                sock.send(
+                  JSON.stringify({
+                    type: 'chat_closed',
+                    chatId,
+                  }),
+                );
+              }
+            });
+
+            // 3) удаляем чат и связанные сообщения
+            await endChat(chatId);
+            break;
+          }
+
+          case 'next': {
+            // 1) получаем участников текущего чата
+            const users = await getChatUsers(chatId);
+
+            // 2) уведомляем, что текущий чат закрыт
+            users.forEach((uid) => {
+              const sock = clients.get(uid);
+              if (sock?.readyState === WebSocket.OPEN) {
+                sock.send(
+                  JSON.stringify({
+                    type: 'chat_closed',
+                    chatId,
+                  }),
+                );
+              }
+            });
+
+            // 3) удаляем текущий чат
+            await endChat(chatId);
+
+            // 4) запускаем поиск нового собеседника
+            await enqueue(userId, filters);
+            const partner = await findPartner(userId);
+            if (partner) {
+              await cancelSearch(userId);
+              await cancelSearch(partner.user_id);
+              const newChat = await createOrGetChat(userId, partner.user_id);
+              // 5) уведомляем о новом матче обоих участников
+              const [u1, u2] = await getChatUsers(newChat.id);
+              [u1, u2].forEach((uid) => {
+                const sock = clients.get(uid);
+                if (sock?.readyState === WebSocket.OPEN) {
+                  sock.send(
+                    JSON.stringify({
+                      type: 'match',
+                      chat: newChat,
+                    }),
+                  );
+                }
+              });
+            }
+            break;
+          }
+
+          default:
+            ws.send(JSON.stringify({ type: 'error', message: 'Unknown message type' }));
+        }
+      } catch (err: any) {
+        // любая ошибка внутри switch
+        console.error('WS handler error:', err);
+        ws.send(JSON.stringify({ type: 'error', message: err.message || 'Internal error' }));
       }
     });
-  });
 
-  console.log('WebSocket server initialised');
-}
-
-/* -------------------------------------------------------------------------- */
-
-async function handleMessage(ws: WebSocket & { userId?: number }, raw: string) {
-  let parsed: unknown;
-  parsed = JSON.parse(raw) as unknown;
-
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    ws.send(JSON.stringify({ error: 'Bad JSON' }));
-    return;
-  }
-
-  switch ((parsed as { type?: string }).type) {
-    case 'send_message': {
-      const m = sendMsgSchema.safeParse(parsed);
-      if (!m.success) return ws.send(JSON.stringify({ error: 'Bad payload' }));
-
-      const { chatId, content, fileUrl } = m.data;
-      const msg = await chatSvc.sendMessage(chatId, ws.userId!, content, fileUrl ?? null);
-      broadcast(chatId, { event: 'new_message', data: msg });
-      /* TODO: когда будет нейронка — здесь можно вызвать aiSvc.handle(msg) */
-      break;
-    }
-    case 'edit_message': {
-      const m = editMsgSchema.safeParse(parsed);
-      if (!m.success) return ws.send(JSON.stringify({ error: 'Bad payload' }));
-
-      const { chatId, messageId, content } = m.data;
-      const updated = await chatSvc.editMessage(chatId, messageId, ws.userId!, content);
-      broadcast(chatId, { event: 'edit_message', data: updated });
-      break;
-    }
-    case 'read_message': {
-      const m = readMsgSchema.safeParse(parsed);
-      if (!m.success) return ws.send(JSON.stringify({ error: 'Bad payload' }));
-
-      const { chatId, messageIds } = m.data;
-      await chatSvc.readMessages(chatId, messageIds, ws.userId!);
-      broadcast(chatId, { event: 'read_message', data: { chatId, messageIds } });
-      break;
-    }
-    case 'typing_start':
-    case 'typing_stop': {
-      const m = typingSchema.safeParse(parsed);
-      if (!m.success) return ws.send(JSON.stringify({ error: 'Bad payload' }));
-
-      broadcast(m.data.chatId, {
-        event: m.data.type,
-        userId: ws.userId,
-      });
-      break;
-    }
-    default:
-      ws.send(JSON.stringify({ error: 'Unknown type' }));
-  }
-}
-
-/* -------------------------------------------------------------------------- */
-
-/** Отправить payload всем участникам чата */
-async function broadcast(chatId: number, payload: unknown) {
-  const json = JSON.stringify(payload);
-
-  // ждём массив userId
-  const participants = await chatSvc.getParticipants(chatId);
-
-  participants.forEach((uid) => {
-    const sockets = connections.get(uid);
-    if (!sockets) return;
-
-    sockets.forEach((sock) => {
-      if (sock.readyState === WebSocket.OPEN) sock.send(json);
+    // чтобы неожиданно не падало при ошибках на сокете
+    ws.on('error', (err) => {
+      console.error(`WS client error (user ${userId}):`, err);
     });
+
+    ws.on('close', () => {
+      clients.delete(userId);
+      cancelSearch(userId);
+    });
+
+    // приветственное сообщение
+    ws.send(JSON.stringify({ type: 'connected', userId }));
   });
 }
