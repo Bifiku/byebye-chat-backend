@@ -1,94 +1,107 @@
-import path from 'path';
-
 import { Router } from 'express';
-import multer from 'multer';
 
-import { catchAsync } from '../helpers/catchAsync';
 import authMiddleware from '../middleware/authMiddleware';
-import * as chatSvc from '../services/chatService';
+import { createOrGetChat, endChat, saveChat, getChatsForUser } from '../services/chatService';
+import { sendMessage, getMessages } from '../services/messageService';
+import { findRandomChat, cancel } from '../services/searchService';
 
 const router = Router();
 
-/* uploads */
-const storage = multer.diskStorage({
-  destination: 'uploads/',
-  filename: (_req, file, cb) =>
-    cb(
-      null,
-      `${Date.now()}-${Math.random().toString(36).slice(2)}${path.extname(file.originalname)}`,
-    ),
+// 1) Список чатов
+router.get('/', authMiddleware, async (req, res, next) => {
+  try {
+    // eslint-disable-next-line
+    // @ts-ignore
+    const chats = await getChatsForUser(req.user.id);
+    res.json(chats);
+  } catch (err) {
+    next(err);
+  }
 });
-const upload = multer({ storage });
 
-router.get(
-  '/',
-  authMiddleware,
-  catchAsync(async (req, res) => {
-    res.json(await chatSvc.listChats(req.userId!));
-  }),
-);
-
-router.post(
-  '/create_or_get',
-  authMiddleware,
-  catchAsync(async (req, res) => {
+// 2) Создать или получить чат с конкретным пользователем
+router.post('/create_or_get', authMiddleware, async (req, res, next) => {
+  try {
     const { recipient_id } = req.body;
-
-    if (!recipient_id || recipient_id === req.userId) {
-      res.status(400).json({ error: 'Bad recipient_id' });
-      return;
-    }
-
-    const chat = await chatSvc.createOrGet(req.userId!, Number(recipient_id));
-
+    // eslint-disable-next-line
+    // @ts-ignore
+    const chat = await createOrGetChat(req.user.id, recipient_id);
     res.json(chat);
-  }),
-);
+  } catch (err) {
+    next(err);
+  }
+});
 
-router.get(
-  '/:chatId/messages',
-  authMiddleware,
-  catchAsync(async (req, res) => {
-    const { chatId } = req.params;
-    const { limit = '50', offset = '0' } = req.query as Record<string, string>;
-    res.json(await chatSvc.getMessages(Number(chatId), req.userId!, Number(limit), Number(offset)));
-  }),
-);
+// 3) Завершить и удалить чат
+router.delete('/:chatId/end', authMiddleware, async (req, res, next) => {
+  try {
+    const chatId = Number(req.params.chatId);
+    await endChat(chatId);
+    res.json({ message: 'Chat ended' });
+  } catch (err) {
+    next(err);
+  }
+});
 
-router.post(
-  '/:chatId/send_message',
-  authMiddleware,
-  upload.single('file'),
-  catchAsync(async (req, res) => {
-    const { chatId } = req.params;
-    const { content } = req.body;
-    const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;
-    const msg = await chatSvc.sendMessage(Number(chatId), req.userId!, content, fileUrl);
-    res.status(201).json(msg);
-  }),
-);
+// 4) Сохранить чат (добавить в друзья)
+router.patch('/:chatId/add_to_friends', authMiddleware, async (req, res, next) => {
+  try {
+    const chatId = Number(req.params.chatId);
+    await saveChat(chatId);
+    res.json({ message: 'Chat saved as friend' });
+  } catch (err) {
+    next(err);
+  }
+});
 
-router.delete(
-  '/:chatId/messages/:msgId',
-  authMiddleware,
-  catchAsync(async (req, res) => {
-    await chatSvc.removeMessage(Number(req.params.chatId), Number(req.params.msgId), req.userId!);
-    res.status(200).json({ ok: true });
-  }),
-);
+// // 5) Найти случайного собеседника
+// router.post('/find_random_chat', authMiddleware, async (req, res, next) => {
+//   try {
+//     const filters = req.body; // { gender?, age_group?, goal }
+//     const chat = await findRandomChat(req.user!.id, filters);
+//     res.json(chat);
+//   } catch (err) {
+//     next(err);
+//   }
+// });
+//
+// // 6) Отменить поиск
+// router.post('/cancel_find_partner', authMiddleware, async (req, res, next) => {
+//   try {
+//     // eslint-disable-next-line
+//     // @ts-ignore
+//     await cancel(req.user.id);
+//     res.json({ message: 'Search cancelled' });
+//   } catch (err) {
+//     next(err);
+//   }
+// });
 
-router.patch(
-  '/:chatId/messages/:msgId',
-  authMiddleware,
-  catchAsync(async (req, res) => {
-    const updated = await chatSvc.editMessage(
-      Number(req.params.chatId),
-      Number(req.params.msgId),
-      req.userId!,
-      req.body.content,
-    );
-    res.json(updated);
-  }),
-);
+// // 7) Получить историю сообщений
+// router.get('/:chatId/messages', authMiddleware, async (req, res, next) => {
+//   try {
+//     const chatId = Number(req.params.chatId);
+//     const limit = Number(req.query.limit) || 50;
+//     const offset = Number(req.query.offset) || 0;
+//     const msgs = await getMessages(chatId, limit, offset);
+//     res.json(msgs);
+//   } catch (err) {
+//     next(err);
+//   }
+// });
+//
+// // 8) Отправить сообщение
+// router.post('/:chatId/send_message', authMiddleware, async (req, res, next) => {
+//   try {
+//     const chatId = Number(req.params.chatId);
+//     const { content } = req.body;
+//     // eslint-disable-next-line
+//     // @ts-ignore
+//     const msg = await sendMessage(chatId, req.user.id, content, 'text');
+//     res.status(201).json(msg);
+//   } catch (err) {
+//     next(err);
+//   }
+// });
 
 export default router;

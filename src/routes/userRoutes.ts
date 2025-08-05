@@ -1,85 +1,56 @@
-import { Router } from 'express';
+// src/routes/userRoutes.ts
+import { Router, Request, Response, NextFunction } from 'express';
+import { body, validationResult } from 'express-validator';
 
-import { catchAsync } from '../helpers/catchAsync';
-import auth from '../middleware/authMiddleware';
-import * as userSvc from '../services/userService';
-import { createAnonSchema, convertSchema, saveTokenSchema } from '../validators/user';
+import authMiddleware from '../middleware/authMiddleware';
+import { getUserById, updateUser } from '../services/userService';
 
 const router = Router();
 
-/* ─────────── 1. создать анонима (тестовый эндпоинт) ─────────── */
-router.post(
-  '/',
-  createAnonSchema,
-  catchAsync(async (req, res) => {
-    const { username, icon_id } = req.body;
-    const user = await userSvc.createAnonymous(username, icon_id);
-    res.status(201).json(user);
-  }),
-);
+// GET /api/v1/user
+router.get('/', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = await getUserById(req.user?.id);
+    res.json(user);
+  } catch (err) {
+    next(err);
+  }
+});
 
-/* ─────────── 2. получить профиль ─────────── */
-router.get(
-  '/:id',
-  catchAsync(async (req, res) => {
-    const profile = await userSvc.getProfile(Number(req.params.id));
-    if (!profile) {
-      res.status(404).json({ error: 'Not found' });
+// PATCH /api/v1/user
+router.patch(
+  '/',
+  authMiddleware,
+  [
+    body('fullname').optional().isString().notEmpty(),
+    body('username').optional().isString().notEmpty(),
+    body('email').optional().isEmail(),
+    body('password').optional().isString().isLength({ min: 6 }),
+    body('gender').optional().isIn(['male', 'female']),
+    body('age_group').optional().isIn(['under_18', '18_30', '31_44', '45_plus']),
+    body('language').optional().isIn(['EN', 'RU']),
+  ],
+  async (req: Request, res: Response, next: NextFunction) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      res.status(400).json({ errors: errors.array() });
       return;
     }
-    res.json(profile);
-  }),
-);
-
-/* ─────────── 3. конвертировать в permanent ─────────── */
-router.post(
-  '/convert_to_permanent',
-  auth,
-  convertSchema,
-  catchAsync(async (req, res) => {
-    const { username, email, password } = req.body;
-    await userSvc.convertToPermanent(req.userId!, username, email, password);
-    res.json({ message: 'Converted' });
-  }),
-);
-
-/* ─────────── 4. удалить аккаунт полностью ─────────── */
-router.delete(
-  '/delete_account',
-  auth,
-  catchAsync(async (req, res) => {
-    await userSvc.deleteAccount(req.userId!);
-    res.json({ message: 'Account deleted' });
-  }),
-);
-
-/* ─────────── 5. сохранить токен устройства ─────────── */
-router.post(
-  '/save-token',
-  auth,
-  saveTokenSchema,
-  catchAsync(async (req, res) => {
-    await userSvc.saveDeviceToken(req.userId!, req.body.token);
-    res.json({ message: 'Token saved' });
-  }),
-);
-
-/* ─────────── 6. статистика приглашений ─────────── */
-router.get(
-  '/stats',
-  auth,
-  catchAsync(async (req, res) => {
-    res.json(await userSvc.inviteStats(req.userId!));
-  }),
-);
-
-/* ─────────── 7. список промо-кодов (только админ) ─────────── */
-router.get(
-  '/promos',
-  auth,
-  catchAsync(async (req, res) => {
-    res.json(await userSvc.listPromos(req.userIsAdmin!));
-  }),
+    if (!req.user) {
+      res.status(401).json({ error: 'Требуется авторизация' });
+      return;
+    }
+    try {
+      const updated = await updateUser(req.user.id, req.body);
+      res.json(updated);
+    } catch (err: any) {
+      if (err.message.includes('taken')) {
+        res.status(409).json({ error: err.message });
+        return;
+      }
+      next(err);
+    }
+  },
 );
 
 export default router;

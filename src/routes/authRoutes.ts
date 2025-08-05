@@ -1,111 +1,84 @@
-import bcrypt from 'bcrypt';
+// src/routes/authRoutes.ts
 import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 
-import { catchAsync } from '../helpers/catchAsync';
-import { issueTokens } from '../helpers/issueTokens';
-import validate from '../helpers/validate';
-import * as userRepo from '../repos/userRepo';
-import * as authSvc from '../services/authService';
-import { getInvitedById } from '../services/referralService';
+import { registerAnonymous, registerFull, login, refreshTokens } from '../services/authService';
 
 const router = Router();
 
-/* --- АНOНИМ --- */
-router.post(
-  '/register_anonymous',
-  validate([body('username').isLength({ min: 3 }), body('icon_id').isInt({ min: 1 })]),
-  catchAsync(async (req, res) => {
-    const { username, icon_id } = req.body;
-    res.status(201).json(await authSvc.registerAnon(username, icon_id));
-  }),
-);
+// 1. Анонимная регистрация
+router.post('/register_anonymous', async (_req, res, next) => {
+  try {
+    const tokens = await registerAnonymous();
+    res.status(201).json(tokens);
+  } catch (err) {
+    next(err);
+  }
+});
 
-/* --- ПОЛНАЯ РЕГИСТРАЦИЯ --- */
+// 2. Полная регистрация (конвертация анонима или новый аккаунт)
 router.post(
   '/register',
-  validate([
-    body('username')
-      .exists()
-      .withMessage('username обязателен')
-      .bail()
-      .isLength({ min: 3 })
-      .withMessage('username слишком короткий'),
-    body('email')
-      .exists()
-      .withMessage('email обязателен')
-      .bail()
-      .isEmail()
-      .withMessage('Некорректный email'),
-    body('password').exists().withMessage('password обязателен').bail().isLength({ min: 6 }),
-    body('icon_id')
-      .exists()
-      .withMessage('icon_id обязателен')
-      .bail()
-      .toInt()
-      .custom((value) => {
-        if (Number.isNaN(value)) throw new Error('icon_id должен быть числом');
-        if (!Number.isInteger(value) || value < 1)
-          throw new Error('icon_id должен быть целым положительным числом');
-        return true;
-      }),
+  [
+    body('username').isString().notEmpty(),
+    body('email').isEmail(),
+    body('password').isString().isLength({ min: 6 }),
     body('referral_code').optional().isString(),
-  ]),
-  (req, res, next) => {
+  ],
+  async (req: any, res: any, next: any) => {
+    // проверка валидации
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      res.status(400).json({ errors: errors.array() });
-      return;
+      return res.status(400).json({ errors: errors.array() });
     }
-    next();
-  },
-  catchAsync(async (req, res) => {
-    const { username, email, password, icon_id, referral_code } = req.body;
-    const invitedBy = referral_code ? await getInvitedById(referral_code) : null;
 
-    if (referral_code && !invitedBy) {
-      return res.status(400).json({ errors: [{ msg: 'Invalid referral code' }] });
+    const { username, email, password, referral_code } = req.body;
+    try {
+      const tokens = await registerFull({ username, email, password, referral_code });
+      res.status(201).json(tokens);
+    } catch (err) {
+      next(err);
     }
-    res.status(201).json(await authSvc.register(username, email, password, icon_id, invitedBy));
-  }),
+  },
 );
 
-/* --- ЛОГИН --- */
+// 3. Логин (по username или email + пароль)
 router.post(
   '/login',
-  validate([
-    body('username')
-      .exists()
-      .withMessage('username обязателен')
-      .bail()
-      .isLength({ min: 3 })
-      .withMessage('username слишком короткий'),
-    body('password').exists().withMessage('password обязателен').bail().isLength({ min: 6 }),
-  ]),
-  catchAsync(async (req, res) => {
-    const { username, password } = req.body;
-    const user = await userRepo.findByUsername(username);
-    if (!user)
-      return res.status(401).json({
-        errors: [{ msg: 'Неверные имя пользователя или пароль' }],
-      });
-    if (!(await bcrypt.compare(password, user.password))) {
-      return res.status(401).json({
-        errors: [{ msg: 'Неверные имя пользователя или пароль' }],
-      });
+  [body('identifier').isString().notEmpty(), body('password').isString().notEmpty()],
+  async (req: any, res: any, next: any) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
     }
-    res.json(await issueTokens(user.id));
-  }),
+
+    const { identifier, password } = req.body;
+    try {
+      const tokens = await login(identifier, password);
+      res.json(tokens);
+    } catch (err) {
+      next(err);
+    }
+  },
 );
 
-/* --- REFRESH --- */
+// 4. Обновление токенов по refreshToken
 router.post(
   '/refresh_token',
-  validate([body('refreshToken').notEmpty()]),
-  catchAsync(async (req, res) => {
-    const { refreshToken } = req.body;
-    res.json(await authSvc.refresh(refreshToken));
-  }),
+  [body('refreshToken').isString().notEmpty()],
+  async (req: any, res: any, next: any) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    try {
+      const tokens = await refreshTokens(req.body.refreshToken);
+      res.json(tokens);
+    } catch (err) {
+      next(err);
+    }
+  },
 );
 
 export default router;
