@@ -1,7 +1,6 @@
 // src/services/authService.ts
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-// eslint-disable-next-line import/no-unresolved
 import { v4 as uuidv4 } from 'uuid';
 
 import pool from '../db';
@@ -9,6 +8,7 @@ import { generateCode } from '../helpers/generateCode';
 
 const JWT_SECRET = process.env.JWT_SECRET!;
 const ACCESS_TOKEN_EXPIRES_IN = '1h';
+const WS_TOKEN_EXPIRES_IN = '7d';
 const REFRESH_TOKEN_EXPIRES_IN = '30d';
 
 /**
@@ -40,10 +40,6 @@ function generateNumericSuffix(length: number): string {
   return res;
 }
 
-/**
- * Генерирует уникальный username вида "anonym_12345",
- * проверяя, что такого ещё нет в базе.
- */
 async function generateUniqueAnonymousUsername(): Promise<string> {
   let username: string;
   let exists: boolean;
@@ -58,18 +54,32 @@ async function generateUniqueAnonymousUsername(): Promise<string> {
   return username;
 }
 
-/**
- * Регистрирует анонимного пользователя.
- * Возвращает два токена: accessToken и refreshToken.
- */
+function signAccessToken(userId: number): string {
+  return jwt.sign({ userId, type: 'api' }, JWT_SECRET, {
+    expiresIn: ACCESS_TOKEN_EXPIRES_IN,
+  });
+}
+
+function signWsToken(userId: number): string {
+  return jwt.sign({ userId, type: 'ws' }, JWT_SECRET, {
+    expiresIn: WS_TOKEN_EXPIRES_IN,
+  });
+}
+
+function signRefreshToken(userId: number): string {
+  return jwt.sign({ userId, type: 'api' }, JWT_SECRET, {
+    expiresIn: REFRESH_TOKEN_EXPIRES_IN,
+  });
+}
+
 export async function registerAnonymous(): Promise<{
   accessToken: string;
   refreshToken: string;
+  wsToken: string;
 }> {
   const username = await generateUniqueAnonymousUsername();
   const referralCode = await generateUniqueReferralCode();
 
-  // Создаём пользователя, прочие поля (is_anonymous = true и т.п.) по умолчанию в БД
   const insertRes = await pool.query<{ id: number }>(
     `INSERT INTO users (username, referral_code)
      VALUES ($1, $2)
@@ -78,21 +88,13 @@ export async function registerAnonymous(): Promise<{
   );
   const userId = insertRes.rows[0].id;
 
-  // Генерируем JWT
-  const payload = { userId };
-  const accessToken = jwt.sign(payload, JWT_SECRET, {
-    expiresIn: ACCESS_TOKEN_EXPIRES_IN,
-  });
-  const refreshToken = jwt.sign(payload, JWT_SECRET, {
-    expiresIn: REFRESH_TOKEN_EXPIRES_IN,
-  });
+  const accessToken = signAccessToken(userId);
+  const refreshToken = signRefreshToken(userId);
+  const wsToken = signWsToken(userId);
 
-  return { accessToken, refreshToken };
+  return { accessToken, refreshToken, wsToken };
 }
 
-/**
- * Полная регистрация / конвертация анонима.
- */
 export async function registerFull(params: {
   username: string;
   email: string;
@@ -101,11 +103,12 @@ export async function registerFull(params: {
 }): Promise<{
   accessToken: string;
   refreshToken: string;
+  wsToken: string;
 }> {
   const { username, email, password, referral_code } = params;
-  const _password = await bcrypt.hash(password, 10);
+  const passwordHash = await bcrypt.hash(password, 10);
+  const referralCode = await generateUniqueReferralCode();
 
-  // inviter
   let inviterId: number | null = null;
   if (referral_code) {
     const r = await pool.query<{ id: number }>(
@@ -116,49 +119,57 @@ export async function registerFull(params: {
     if (inviterId) {
       await pool.query(
         `UPDATE users
-         SET referrals_ids = referrals_ids || $1::jsonb
-         WHERE id = $2`,
+            SET referrals_ids = referrals_ids || $1::jsonb
+          WHERE id = $2`,
         [JSON.stringify([inviterId]), inviterId],
       );
     }
   }
 
-  // новый уникальный referral_code для создаваемого юзера
-  const newReferralCode = await generateUniqueReferralCode();
+  let userId: number;
 
-  const inserted = await pool.query<{ id: number }>(
-    `INSERT INTO users
-     (username, email, password, is_anonymous, referral_code, inviter_id)
-     VALUES ($1,$2,$3,false,$4,$5)
-         RETURNING id`,
-    [username, email, _password, newReferralCode, inviterId],
-  );
-  const userId = inserted.rows[0].id;
+  try {
+    const insertRes = await pool.query<{ id: number }>(
+      `INSERT INTO users
+         (username, email, password, is_anonymous, referral_code, inviter_id)
+       VALUES ($1,$2,$3,false,$4,$5)
+       RETURNING id`,
+      [username, email, passwordHash, referralCode, inviterId],
+    );
+    userId = insertRes.rows[0].id;
+  } catch (err: any) {
+    // Unique violation: 23505
+    if (err.code === '23505') {
+      // Можно получить имя поля из err.detail
+      if (err.detail?.includes('username')) {
+        throw { status: 409, message: 'Username уже занят' };
+      }
+      if (err.detail?.includes('email')) {
+        throw { status: 409, message: 'Email уже занят' };
+      }
+      throw { status: 409, message: 'Пользователь с такими данными уже существует' };
+    }
+    throw err; // Прочие ошибки пусть обрабатываются выше
+  }
 
-  const payload = { userId };
-  const accessToken = jwt.sign(payload, JWT_SECRET, {
-    expiresIn: ACCESS_TOKEN_EXPIRES_IN,
-  });
-  const refreshToken = jwt.sign(payload, JWT_SECRET, {
-    expiresIn: REFRESH_TOKEN_EXPIRES_IN,
-  });
-  return { accessToken, refreshToken };
+  const accessToken = signAccessToken(userId);
+  const refreshToken = signRefreshToken(userId);
+  const wsToken = signWsToken(userId);
+
+  return { accessToken, refreshToken, wsToken };
 }
 
-/**
- * Логин по username/email и паролю.
- */
 export async function login(
   identifier: string,
   password: string,
 ): Promise<{
   accessToken: string;
   refreshToken: string;
+  wsToken: string;
 }> {
-  // identifier может быть username или email
   const { rows } = await pool.query<{
     id: number;
-    password: string;
+    password_hash: string;
   }>(
     `SELECT id, password
        FROM users
@@ -166,42 +177,37 @@ export async function login(
       LIMIT 1`,
     [identifier],
   );
-  if (!rows.length) {
-    throw new Error('User not found');
-  }
-  const { id, password: password_hash } = rows[0];
+  if (!rows.length) throw new Error('User not found');
+  const { id, password_hash } = rows[0];
   const match = await bcrypt.compare(password, password_hash);
-  if (!match) {
-    throw new Error('Invalid credentials');
-  }
+  if (!match) throw new Error('Invalid credentials');
 
-  const payload = { userId: id };
-  const accessToken = jwt.sign(payload, JWT_SECRET, {
-    expiresIn: ACCESS_TOKEN_EXPIRES_IN,
-  });
-  const refreshToken = jwt.sign(payload, JWT_SECRET, {
-    expiresIn: REFRESH_TOKEN_EXPIRES_IN,
-  });
-  return { accessToken, refreshToken };
+  const accessToken = signAccessToken(id);
+  const refreshToken = signRefreshToken(id);
+  const wsToken = signWsToken(id);
+
+  return { accessToken, refreshToken, wsToken };
 }
 
-/**
- * Обновление accessToken по refreshToken.
- */
 export async function refreshTokens(oldRefreshToken: string): Promise<{
   accessToken: string;
   refreshToken: string;
+  wsToken: string;
 }> {
+  let payload: { userId: number; type: string };
   try {
-    const payload = jwt.verify(oldRefreshToken, JWT_SECRET) as { userId: number };
-    const accessToken = jwt.sign({ userId: payload.userId }, JWT_SECRET, {
-      expiresIn: ACCESS_TOKEN_EXPIRES_IN,
-    });
-    const refreshToken = jwt.sign({ userId: payload.userId }, JWT_SECRET, {
-      expiresIn: REFRESH_TOKEN_EXPIRES_IN,
-    });
-    return { accessToken, refreshToken };
-  } catch (err) {
+    payload = jwt.verify(oldRefreshToken, JWT_SECRET) as any;
+  } catch {
     throw new Error('Invalid refresh token');
   }
+  if (payload.type !== 'api') {
+    throw new Error('Invalid token type');
+  }
+  const userId = payload.userId;
+
+  const accessToken = signAccessToken(userId);
+  const refreshToken = signRefreshToken(userId);
+  const wsToken = signWsToken(userId);
+
+  return { accessToken, refreshToken, wsToken };
 }
