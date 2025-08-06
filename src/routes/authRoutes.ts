@@ -6,7 +6,6 @@ import { registerAnonymous, registerFull, login, refreshTokens } from '../servic
 
 const router = Router();
 
-// 1. Анонимная регистрация
 router.post('/register_anonymous', async (_req, res, next) => {
   try {
     const tokens = await registerAnonymous();
@@ -16,33 +15,32 @@ router.post('/register_anonymous', async (_req, res, next) => {
   }
 });
 
-// 2. Полная регистрация (конвертация анонима или новый аккаунт)
 router.post(
   '/register',
   [
     body('username').isString().notEmpty(),
     body('email').isEmail(),
     body('password').isString().isLength({ min: 6 }),
-    body('referral_code').optional().isString(),
+    body('referral_code').optional().isUUID(),
   ],
   async (req: any, res: any, next: any) => {
-    // проверка валидации
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
     }
-
-    const { username, email, password, referral_code } = req.body;
     try {
-      const tokens = await registerFull({ username, email, password, referral_code });
+      const tokens = await registerFull(req.body);
       res.status(201).json(tokens);
-    } catch (err) {
-      next(err);
+    } catch (err: any) {
+      if (err.status) {
+        res.status(err.status).json({ error: err.message });
+      } else {
+        next(err);
+      }
     }
   },
 );
 
-// 3. Логин (по username или email + пароль)
 router.post(
   '/login',
   [body('identifier').isString().notEmpty(), body('password').isString().notEmpty()],
@@ -51,10 +49,8 @@ router.post(
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
     }
-
-    const { identifier, password } = req.body;
     try {
-      const tokens = await login(identifier, password);
+      const tokens = await login(req.body.identifier, req.body.password);
       res.json(tokens);
     } catch (err) {
       next(err);
@@ -62,7 +58,6 @@ router.post(
   },
 );
 
-// 4. Обновление токенов по refreshToken
 router.post(
   '/refresh_token',
   [body('refreshToken').isString().notEmpty()],
@@ -71,7 +66,6 @@ router.post(
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
     }
-
     try {
       const tokens = await refreshTokens(req.body.refreshToken);
       res.json(tokens);

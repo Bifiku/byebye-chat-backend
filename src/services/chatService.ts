@@ -10,6 +10,17 @@ export interface Chat {
   // если нужен признак бота: is_bot?: boolean;
 }
 
+export async function getChatById(chatId: number): Promise<Chat> {
+  // Попробуем найти уже существующий чат
+  const { rows } = await pool.query<Chat>(
+    `SELECT *
+     FROM chats
+     WHERE (id = $1) LIMIT 1`,
+    [chatId],
+  );
+  return rows[0];
+}
+
 /**
  * Создаёт или возвращает существующий чат между двумя юзерами.
  * @param userId1

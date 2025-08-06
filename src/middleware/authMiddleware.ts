@@ -1,41 +1,36 @@
-// src/middleware/authMiddleware.ts
+// src/middlewares/authMiddleware.ts
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
-interface AuthenticatedRequest extends Request {
-  user?: { id: number; isAdmin?: boolean };
+interface Payload {
+  userId: number;
+  type: string;
 }
 
-const authMiddleware = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-  const header = req.headers.authorization;
-  if (!header) {
-    res.status(401).json({ error: 'Требуется авторизация' });
+export interface AuthRequest extends Request {
+  user?: { id: number };
+}
+
+const JWT_SECRET = process.env.JWT_SECRET!;
+
+export default function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
+  const auth = req.headers.authorization;
+  if (!auth?.startsWith('Bearer ')) {
+    res.status(401).json({ error: 'No token provided' });
     return;
   }
-
-  const token = header.split(' ')[1];
-  if (!token) {
-    res.status(401).json({ error: 'Требуется авторизация' });
-    return;
-  }
-
+  const token = auth.slice(7);
+  let payload: Payload;
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as jwt.JwtPayload & {
-      userId: number;
-      isAdmin?: boolean;
-    };
-
-    // Привязываем user
-    req.user = {
-      id: decoded.userId,
-      isAdmin: decoded.isAdmin,
-    };
-
-    next();
+    payload = jwt.verify(token, JWT_SECRET) as Payload;
   } catch {
-    res.status(403).json({ error: 'Недействительный токен' });
+    res.status(401).json({ error: 'Invalid token' });
     return;
   }
-};
-
-export default authMiddleware;
+  if (payload.type !== 'api') {
+    res.status(401).json({ error: 'Invalid token type' });
+    return;
+  }
+  req.user = { id: payload.userId };
+  next();
+}
