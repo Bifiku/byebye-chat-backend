@@ -5,7 +5,7 @@ import jwt from 'jsonwebtoken';
 import WebSocket, { Server } from 'ws';
 
 import { createOrGetChat, endChat, getChatById, getChatUsers, saveChat } from './chatService';
-import { sendMessage } from './messageService';
+import { getReadCursors, listMessages, markReadUpTo, sendMessage } from './messageService';
 import { enqueue, findPartner, cancel as cancelSearch } from './searchService';
 
 const JWT_SECRET = process.env.JWT_SECRET!;
@@ -15,11 +15,10 @@ const pendingSaveRequests = new Map<number, Set<number>>();
 const activeChats = new Map<number, number>(); // userId -> chatId
 const disconnectTimeouts = new Map<number, NodeJS.Timeout>();
 const disconnectedUsers = new Map<number, { chatId: number; timeout: NodeJS.Timeout }>();
+const chatMembers = new Map<number, [number, number]>();
 
 async function handleEnd(chatId: number, notificationType: string) {
-  // 1) Получаем участников
-  const users = await getChatUsers(chatId);
-  // 2) Уведомляем
+  const users = chatMembers.get(chatId) ?? (await getChatUsers(chatId));
   users.forEach((uid) => {
     const sock = clients.get(uid);
     if (sock?.readyState === WebSocket.OPEN) {
@@ -27,13 +26,12 @@ async function handleEnd(chatId: number, notificationType: string) {
     }
     activeChats.delete(uid);
   });
-  // 3) Сбрасываем таймаут, если был
   const to = disconnectTimeouts.get(chatId);
   if (to) {
     clearTimeout(to);
     disconnectTimeouts.delete(chatId);
   }
-  // 4) Удаляем чат
+  chatMembers.delete(chatId);
   await endChat(chatId);
 }
 
@@ -90,23 +88,23 @@ export function setupWebSocket(server: http.Server) {
       const { chatId, timeout } = disconnectedUsers.get(userId)!;
       clearTimeout(timeout);
       disconnectedUsers.delete(userId);
-      // возвращаем пользователя в activeChats
+
       activeChats.set(userId, chatId);
-      // уведомляем партнёра о возвращении
-      const users = await getChatUsers(chatId);
+
+      // если по каким-то причинам chatMembers нет — восстановим из БД
+      if (!chatMembers.has(chatId)) {
+        const users = await getChatUsers(chatId);
+        chatMembers.set(chatId, [users[0], users[1]]);
+      }
+
+      const users = chatMembers.get(chatId)!;
       const other = users.find((u) => u !== userId)!;
       const sock = clients.get(other);
       if (sock?.readyState === WebSocket.OPEN) {
-        sock.send(
-          JSON.stringify({
-            type: 'partner_reconnected',
-            chatId,
-          }),
-        );
+        sock.send(JSON.stringify({ type: 'partner_reconnected', chatId }));
       }
     }
 
-    // подтверждаем
     ws.send(JSON.stringify({ type: 'connected', userId }));
 
     ws.on('message', async (raw) => {
@@ -136,20 +134,23 @@ export function setupWebSocket(server: http.Server) {
             if (partner) {
               await cancelSearch(userId);
               await cancelSearch(partner.user_id);
-              const chat = await createOrGetChat(userId, partner.user_id);
 
-              // уведомляем обоих
+              const chat = await createOrGetChat(userId, partner.user_id);
               const [u1, u2] = await getChatUsers(chat.id);
+              const cursors = await getReadCursors(chat.id);
+
+              // 1) СНАЧАЛА кладём в карты (чтоб close не пролетел мимо)
+              activeChats.set(u1, chat.id);
+              activeChats.set(u2, chat.id);
+              chatMembers.set(chat.id, [u1, u2]);
+
+              // 2) Потом уже шлём уведомления
               [u1, u2].forEach((uid) => {
                 const c = clients.get(uid);
                 if (c?.readyState === WebSocket.OPEN) {
-                  c.send(JSON.stringify({ type: 'match', chat }));
+                  c.send(JSON.stringify({ type: 'match', chat, cursors }));
                 }
               });
-
-              // **Сразу помечаем их как «в чате»**
-              activeChats.set(u1, chat.id);
-              activeChats.set(u2, chat.id);
             }
             break;
           }
@@ -269,6 +270,59 @@ export function setupWebSocket(server: http.Server) {
             break;
           }
 
+          case 'history': {
+            // security: убеждаемся, что юзер участник чата
+            const users = await getChatUsers(chatId);
+            if (!users.includes(userId)) {
+              return ws.send(JSON.stringify({ type: 'error', message: 'Forbidden' }));
+            }
+            const { items, nextBeforeId } = await listMessages(
+              chatId,
+              msg.limit || 50,
+              msg.beforeId,
+            );
+            ws.send(JSON.stringify({ type: 'history', chatId, items, nextBeforeId }));
+            break;
+          }
+
+          case 'read': {
+            // { chatId, messageId }
+            const users = await getChatUsers(chatId);
+            if (!users.includes(userId)) {
+              return ws.send(JSON.stringify({ type: 'error', message: 'Forbidden' }));
+            }
+            const { last_read_message_id, last_read_at } = await markReadUpTo(
+              chatId,
+              userId,
+              msg.messageId,
+            );
+
+            // уведомляем второго участника
+            const other = users.find((u) => u !== userId)!;
+            const sock = clients.get(other);
+            if (sock?.readyState === WebSocket.OPEN) {
+              sock.send(
+                JSON.stringify({
+                  type: 'read_receipt',
+                  chatId,
+                  userId,
+                  messageId: last_read_message_id,
+                  at: last_read_at,
+                }),
+              );
+            }
+            // по желанию можно отправить подтверждение отправителю
+            ws.send(
+              JSON.stringify({
+                type: 'read_ack',
+                chatId,
+                messageId: last_read_message_id,
+                at: last_read_at,
+              }),
+            );
+            break;
+          }
+
           default:
             ws.send(JSON.stringify({ type: 'error', message: 'Unknown type' }));
         }
@@ -282,44 +336,55 @@ export function setupWebSocket(server: http.Server) {
       clients.delete(userId);
       cancelSearch(userId);
 
-      const chatId = activeChats.get(userId);
-      if (chatId) {
-        // 1) удаляем из активных
-        activeChats.delete(userId);
-
-        // 2) уведомляем партнёра о дисконнекте
-        getChatUsers(chatId).then((users) => {
-          const other = users.find((u) => u !== userId)!;
-          const sock = clients.get(other);
-          if (sock?.readyState === WebSocket.OPEN) {
-            sock.send(JSON.stringify({ type: 'partner_disconnected', chatId }));
+      // 1) пытаемся взять активный chatId
+      let chatId = activeChats.get(userId);
+      // 2) если нет — глянем pending disconnect
+      if (!chatId && disconnectedUsers.has(userId)) {
+        chatId = disconnectedUsers.get(userId)!.chatId;
+      }
+      // 3) если всё ещё пусто — попробуем найти по chatMembers
+      if (!chatId) {
+        for (const [cid, pair] of chatMembers.entries()) {
+          if (pair.includes(userId)) {
+            chatId = cid;
+            break;
           }
-        });
-
-        // 3) планируем авто‐удаление через 30 сек, запоминаем этот таймаут
-        if (!disconnectedUsers.has(userId)) {
-          const timeout = setTimeout(async () => {
-            // удаляем чат, если эфемерный
-            const chat = await getChatById(chatId);
-            if (chat && !chat.is_saved) {
-              const users = await getChatUsers(chatId);
-              users.forEach((uid) => {
-                const s = clients.get(uid);
-                if (s?.readyState === WebSocket.OPEN) {
-                  s.send(
-                    JSON.stringify({
-                      type: 'chat_closed_timeout',
-                      chatId,
-                    }),
-                  );
-                }
-              });
-              await endChat(chatId);
-            }
-            disconnectedUsers.delete(userId);
-          }, 30_000);
-          disconnectedUsers.set(userId, { chatId, timeout });
         }
+      }
+      if (!chatId) return; // ни в каком чате — уходим
+
+      // удаляем из активных
+      activeChats.delete(userId);
+
+      // уведомляем партнёра
+      const users = chatMembers.get(chatId) ?? [];
+      const other = users.find((u) => u !== userId);
+      if (other) {
+        const sock = clients.get(other);
+        if (sock?.readyState === WebSocket.OPEN) {
+          sock.send(JSON.stringify({ type: 'partner_disconnected', chatId }));
+        }
+      }
+
+      // планируем авто-удаление через 30 сек
+      if (!disconnectedUsers.has(userId)) {
+        const timeout = setTimeout(async () => {
+          const chat = await getChatById(chatId!);
+          if (chat && !chat.is_saved) {
+            const pair = chatMembers.get(chatId!) ?? (await getChatUsers(chatId!));
+            pair.forEach((uid) => {
+              const s = clients.get(uid);
+              if (s?.readyState === WebSocket.OPEN) {
+                s.send(JSON.stringify({ type: 'chat_closed_timeout', chatId }));
+              }
+              activeChats.delete(uid);
+            });
+            chatMembers.delete(chatId!);
+            await endChat(chatId!);
+          }
+          disconnectedUsers.delete(userId);
+        }, 30_000);
+        disconnectedUsers.set(userId, { chatId, timeout });
       }
     });
   });
